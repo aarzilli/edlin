@@ -125,7 +125,7 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 	case 'C':
 		//TODO: copy
 	case 'D':
-		//TODO: delete
+		e.delete(params)
 	case 'E':
 		//TODO: save file and exit
 	case 'I':
@@ -241,6 +241,10 @@ var (
 
 func (e *Edlin) edit(p0 int) {
 	e.Current = p0
+
+	if e.Current > len(e.Lines) || e.Current <= 0 {
+		return
+	}
 
 	fmt.Printf("%7d:*%s\n", e.Current, e.Lines[e.Current-1])
 	fmt.Printf("%7d:*", e.Current)
@@ -386,6 +390,25 @@ editLoop:
 		e.Dirty = true
 		e.Lines[e.Current-1] = string(outbuf)
 	}
+}
+
+func (e *Edlin) delete(params []int) {
+	// two parameters, zero means e.Current for both
+	// deletes the interval specified, moves e.Current to the first line after the interval
+	p0, p1 := params2(params)
+	if p0 == 0 {
+		p0 = e.Current
+	}
+	if p1 == 0 {
+		p1 = e.Current
+	}
+	if p0 > p1 || p0 < 0 || p0 > len(e.Lines) || p1 > len(e.Lines) {
+		panic(EntryErrMsg)
+	}
+
+	copy(e.Lines[p0-1:], e.Lines[p1:])
+	e.Lines = e.Lines[:p0+len(e.Lines[p1:])-1]
+	e.Current = p0
 }
 
 func (e *Edlin) list(params []int) {
