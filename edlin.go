@@ -33,7 +33,7 @@ func main() {
 			TheEditor.Lines = append(TheEditor.Lines, rd.Text())
 		}
 		fatal("read", rd.Err())
-		fmt.Printf("End of input file\n")
+		fmt.Printf(EndOfInputFileMsg)
 	} else {
 		if !os.IsNotExist(err) {
 			fatal("open", err)
@@ -42,6 +42,11 @@ func main() {
 		fatal("create", err)
 		fh.Close()
 		fmt.Printf("New file\n")
+	}
+
+	if _, err := os.Stat(TheEditor.Path + "~"); err == nil {
+		err := os.Remove(TheEditor.Path + "~")
+		fatal("remove backup", err)
 	}
 
 	TheEditor.Current = 1
@@ -80,7 +85,10 @@ const (
 
 type MoreFn func(prompt string) (out string, ok bool)
 
-const EntryErrMsg = "Entry error\n"
+const (
+	EntryErrMsg       = "Entry error\n"
+	EndOfInputFileMsg = "End of input file\n"
+)
 
 func (e *Edlin) Exec(cmdstr string) ExecReturn {
 	defer func() {
@@ -102,9 +110,7 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 
 	//TODO: sequence of commands separated by semicolon
 
-	if cmd >= 'a' && cmd <= 'z' {
-		cmd = cmd - 0x20
-	}
+	cmd = cmd & ^uint8(0x20)
 
 	_ = rest
 
@@ -121,13 +127,17 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 	case '?':
 		//TODO: print help (document function keys for edit?)
 	case 'A':
-		//TODO: append
+		if len(params) != 1 {
+			panic(EntryErrMsg)
+		}
+		fmt.Fprintf(e.Stdout, EndOfInputFileMsg)
 	case 'C':
 		//TODO: copy
 	case 'D':
 		e.delete(params)
 	case 'E':
-		//TODO: save file and exit
+		e.end(params)
+		return Quit
 	case 'I':
 		//TODO: insert
 	case 'L':
@@ -147,7 +157,7 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 	case 'T':
 		//TODO: transfer
 	case 'W':
-		//TODO: write
+		e.write(params)
 	default:
 		fmt.Fprintf(e.Stdout, EntryErrMsg)
 		return Continue
@@ -175,6 +185,8 @@ func (e *Edlin) parse(cmdstr string) (params []int, cmd byte, rest string) {
 			return n
 		}
 
+		added := true
+
 		switch cmdstr[i] {
 		case '.':
 			i++
@@ -200,7 +212,7 @@ func (e *Edlin) parse(cmdstr string) (params []int, cmd byte, rest string) {
 			}
 			params = append(params, n)
 		default:
-			params = append(params, 0)
+			added = false
 		}
 
 		if i >= len(cmdstr) {
@@ -214,6 +226,10 @@ func (e *Edlin) parse(cmdstr string) (params []int, cmd byte, rest string) {
 			return params, cmdstr[i], cmdstr[i:]
 		}
 		i++
+
+		if !added {
+			params = append(params, 0)
+		}
 
 		if len(params) >= 4 {
 			return nil, 0, ""
@@ -249,16 +265,7 @@ func (e *Edlin) edit(p0 int) {
 	fmt.Printf("%7d:*%s\n", e.Current, e.Lines[e.Current-1])
 	fmt.Printf("%7d:*", e.Current)
 
-	var a syscall.Termios
-	if err := termios.Tcgetattr(os.Stdin.Fd(), &a); err == nil {
-		oldattr := a
-		termios.Cfmakeraw(&a)
-		termios.Tcsetattr(os.Stdin.Fd(), termios.TCSANOW, &a)
-		defer func() {
-			termios.Tcsetattr(os.Stdin.Fd(), termios.TCSANOW, &oldattr)
-			fmt.Printf("\n")
-		}()
-	}
+	defer setRaw()()
 
 	model := e.Lines[e.Current-1]
 	mi := 0
@@ -411,6 +418,15 @@ func (e *Edlin) delete(params []int) {
 	e.Current = p0
 }
 
+func (e *Edlin) end(params []int) {
+	if len(params) != 0 {
+		panic(EntryErrMsg)
+	}
+	e.write([]int{len(e.Lines)})
+	err := os.Rename(e.Path+"~", e.Path)
+	fatal("save", err)
+}
+
 func (e *Edlin) list(params []int) {
 	p0, p1 := params2(params)
 
@@ -441,8 +457,61 @@ func (e *Edlin) list(params []int) {
 }
 
 func (e *Edlin) quit() ExecReturn {
-	//TODO: if dirty ask confirmation
-	return Quit
+	if !e.Dirty {
+		return Quit
+	}
+
+	for {
+		fmt.Fprintf(e.Stdout, "Abort edit (Y/N)? ")
+
+		tocooked := setRaw()
+		buf := make([]byte, 1)
+		_, err := os.Stdin.Read(buf)
+		fmt.Fprintf(e.Stdout, "%c", buf[0])
+		tocooked()
+		fatal("reading term", err)
+
+		buf[0] = buf[0] & ^uint8(0x20)
+
+		switch buf[0] {
+		case 'Y':
+			os.Remove(e.Path + "~")
+			return Quit
+		case 'N':
+			return Continue
+		}
+	}
+}
+
+func (e *Edlin) write(params []int) {
+	var n int
+	switch len(params) {
+	case 0:
+		n = len(e.Lines) / 2
+	case 1:
+		n = params[0]
+		if n > len(e.Lines) {
+			n = len(e.Lines)
+		}
+	default:
+		panic(EntryErrMsg)
+	}
+	fh, err := os.OpenFile(e.Path+"~", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0660)
+	fatal("write", err)
+	for i := 0; i < n; i++ {
+		n, err := fh.Write([]byte(e.Lines[i]))
+		fatal("write", err)
+		if n != len(e.Lines[i]) {
+			fmt.Fprintf(e.Stdout, "Short write.\n")
+			os.Exit(1)
+		}
+		fh.Write([]byte{'\n'})
+	}
+	fatal("write", fh.Close())
+	copy(e.Lines, e.Lines[n:])
+	e.Lines = e.Lines[:len(e.Lines[n:])]
+	e.Current = 1
+	e.Dirty = true
 }
 
 func params2(params []int) (int, int) {
@@ -462,4 +531,18 @@ func params2(params []int) (int, int) {
 		panic(EntryErrMsg)
 	}
 	return p0, p1
+}
+
+func setRaw() func() {
+	var a syscall.Termios
+	if err := termios.Tcgetattr(os.Stdin.Fd(), &a); err == nil {
+		oldattr := a
+		termios.Cfmakeraw(&a)
+		termios.Tcsetattr(os.Stdin.Fd(), termios.TCSANOW, &a)
+		return func() {
+			termios.Tcsetattr(os.Stdin.Fd(), termios.TCSANOW, &oldattr)
+			fmt.Printf("\n")
+		}
+	}
+	return func() {}
 }
