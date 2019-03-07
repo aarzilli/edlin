@@ -40,7 +40,7 @@ func testCommandIntl(t *testing.T, before, after string, cur int, command string
 	if before != "" {
 		e.Lines = strings.Split(before, "\n")
 	}
-	e.Exec(command, nil)
+	e.Exec(command)
 	t.Logf("<%s> -> %s\n", command, out.String())
 	if output != "*" && out.String() != output {
 		t.Errorf("error executing %q, output mismatch", command)
@@ -101,4 +101,8 @@ func TestList(t *testing.T) {
 	testList(t, vispaTeresa, ",5l", 1, 5, 1)
 	testList(t, vispaTeresa, ",5l", 1, 5, 3)
 	testList(t, vispaTeresa, ",5l", 9, 24, 20)
+}
+
+func TestSearch(t *testing.T) {
+	testCommandIntl(t, vispaTeresa, vispaTeresa, 1, "ser", "*")
 }

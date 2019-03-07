@@ -7,6 +7,7 @@ import (
 	"github.com/pkg/term/termios"
 	"io"
 	"os"
+	"strings"
 	"syscall"
 )
 
@@ -69,11 +70,12 @@ func main() {
 }
 
 type Edlin struct {
-	Path    string
-	Lines   []string
-	Current int
-	Stdout  io.Writer
-	Dirty   bool
+	Path       string
+	Lines      []string
+	Current    int
+	Stdout     io.Writer
+	Dirty      bool
+	lastNeedle string
 }
 
 type ExecReturn uint8
@@ -88,6 +90,7 @@ type MoreFn func(prompt string) (out string, ok bool)
 const (
 	EntryErrMsg       = "Entry error\n"
 	EndOfInputFileMsg = "End of input file\n"
+	NotFoundMsg       = "Not found\n"
 )
 
 func (e *Edlin) Exec(cmdstr string) ExecReturn {
@@ -110,9 +113,19 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 
 	//TODO: sequence of commands separated by semicolon
 
+	qmark := false
+	if cmd == '?' && len(rest) > 0 {
+		cmd = rest[0]
+		rest = rest[1:]
+		qmark = true
+	}
+
 	cmd = cmd & ^uint8(0x20)
 
-	_ = rest
+	if qmark && cmd != 'S' && cmd != 'R' {
+		fmt.Fprintf(e.Stdout, EntryErrMsg)
+		return Continue
+	}
 
 	switch cmd {
 	case 0:
@@ -153,7 +166,7 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 	case 'R':
 		//TODO: replace
 	case 'S':
-		//TODO: search
+		e.search(params, rest, qmark)
 	case 'T':
 		//TODO: transfer
 	case 'W':
@@ -223,7 +236,7 @@ func (e *Edlin) parse(cmdstr string) (params []int, cmd byte, rest string) {
 			i++
 		}
 		if cmdstr[i] != ',' {
-			return params, cmdstr[i], cmdstr[i:]
+			return params, cmdstr[i], cmdstr[i+1:]
 		}
 		i++
 
@@ -469,8 +482,19 @@ func (e *Edlin) quit() ExecReturn {
 		return Quit
 	}
 
+	switch e.yesno("Abort edit (Y/N)? ", true) {
+	case 'Y':
+		os.Remove(e.Path + "~")
+		return Quit
+	default:
+		return Continue
+	}
+
+}
+
+func (e *Edlin) yesno(prompt string, strict bool) byte {
 	for {
-		fmt.Fprintf(e.Stdout, "Abort edit (Y/N)? ")
+		fmt.Fprintf(e.Stdout, prompt)
 
 		tocooked := setRaw()
 		buf := make([]byte, 1)
@@ -481,14 +505,50 @@ func (e *Edlin) quit() ExecReturn {
 
 		buf[0] = buf[0] & ^uint8(0x20)
 
+		if !strict {
+			return buf[0]
+		}
 		switch buf[0] {
-		case 'Y':
-			os.Remove(e.Path + "~")
-			return Quit
-		case 'N':
-			return Continue
+		case 'Y', 'N':
+			return buf[0]
 		}
 	}
+
+}
+
+func (e *Edlin) search(params []int, needle string, qmark bool) {
+	p0, p1 := params2(params)
+	if p0 == 0 {
+		p0 = e.Current + 1
+	}
+	if p1 == 0 {
+		p1 = len(e.Lines) + 1
+	}
+	if needle == "" {
+		needle = e.lastNeedle
+	}
+	e.lastNeedle = needle
+
+	for i := p0; i <= len(e.Lines) && i <= p1; i++ {
+		if !strings.Contains(e.Lines[i-1], needle) {
+			continue
+		}
+		iscur := ' '
+		if i == e.Current {
+			iscur = '*'
+		}
+		fmt.Fprintf(e.Stdout, "%7d:%c%s\n", i, iscur, e.Lines[i-1])
+		if !qmark {
+			e.Current = i
+			return
+		}
+		if e.yesno("O.K.? ", false) == 'Y' {
+			e.Current = i
+			return
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, NotFoundMsg)
 }
 
 func (e *Edlin) write(params []int) {
