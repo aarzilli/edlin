@@ -141,11 +141,11 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 	case 'I':
 		//TODO: insert
 	case 'L':
-		e.list(params)
+		e.display(params, false)
 	case 'M':
 		//TODO: move
 	case 'P':
-		//TODO: page
+		e.display(params, true)
 	case 'Q':
 		if e.quit() == Quit {
 			return Quit
@@ -427,7 +427,7 @@ func (e *Edlin) end(params []int) {
 	fatal("save", err)
 }
 
-func (e *Edlin) list(params []int) {
+func (e *Edlin) display(params []int, setcur bool) {
 	p0, p1 := params2(params)
 
 	start := e.Current - 11
@@ -447,7 +447,15 @@ func (e *Edlin) list(params []int) {
 		n = 23
 	}
 
+	if setcur {
+		e.Current = 0
+	}
+
 	for i := 0; i < n && (i+start-1 < len(e.Lines)); i++ {
+		last := !(i+1 < n && (i+start < len(e.Lines)))
+		if last && setcur {
+			e.Current = i + start
+		}
 		iscur := ' '
 		if i+start == e.Current {
 			iscur = '*'
