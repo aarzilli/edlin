@@ -52,13 +52,9 @@ func main() {
 
 	TheEditor.Current = 1
 
-	stdin := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Printf("*")
-		if !stdin.Scan() {
-			break
-		}
-		cmdstr := stdin.Text()
+		cmdstr := TheEditor.Input()
 
 		r := TheEditor.Exec(cmdstr)
 
@@ -66,16 +62,16 @@ func main() {
 			break
 		}
 	}
-	fatal("reading input", stdin.Err())
 }
 
 type Edlin struct {
-	Path       string
-	Lines      []string
-	Current    int
-	Stdout     io.Writer
-	Dirty      bool
-	lastNeedle string
+	Path    string
+	Lines   []string
+	Current int
+	Stdout  io.Writer
+	Dirty   bool
+
+	lastNeedle, lastReplace string
 }
 
 type ExecReturn uint8
@@ -164,7 +160,7 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 			return Quit
 		}
 	case 'R':
-		//TODO: replace
+		e.replace(params, rest, qmark)
 	case 'S':
 		e.search(params, rest, qmark)
 	case 'T':
@@ -177,6 +173,51 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 	}
 
 	return Continue
+}
+
+// INPUT ////////////////////////////////////////////////////////////////////////////////////////////
+
+func (e *Edlin) Input() string {
+	if e.Stdout == nil {
+		e.Stdout = os.Stdout
+	}
+
+	rr := e.newRawReader()
+	defer rr.Close()
+
+	outbuf := []byte{}
+
+	for {
+		buf := rr.Next()
+		switch len(buf) {
+		case 1:
+			switch buf[0] {
+			case 0x3: // Ctrl-C
+				fmt.Fprintf(e.Stdout, "^C")
+				rr.Close()
+				os.Exit(1)
+			case 0x1a: // Ctrl-Z
+				fmt.Fprintf(e.Stdout, "^Z")
+				outbuf = append(outbuf, 0x1a)
+			case 0x7f: // Backspace
+				if len(outbuf) > 0 {
+					if outbuf[len(outbuf)-1] == 0x1a {
+						fmt.Fprintf(e.Stdout, "\x08 \x08")
+					}
+					fmt.Fprintf(e.Stdout, "\x08 \x08")
+					outbuf = outbuf[:len(outbuf)-1]
+				}
+			case 0xd: // Return
+				return string(outbuf)
+			default:
+				fmt.Fprintf(e.Stdout, "%s", string(buf))
+				outbuf = append(outbuf, buf...)
+			}
+		default:
+			fmt.Fprintf(e.Stdout, "%s", string(buf))
+			outbuf = append(outbuf, buf...)
+		}
+	}
 }
 
 func (e *Edlin) parse(cmdstr string) (params []int, cmd byte, rest string) {
@@ -252,21 +293,7 @@ func (e *Edlin) parse(cmdstr string) (params []int, cmd byte, rest string) {
 	return nil, 0, ""
 }
 
-var (
-	escSeqDelete = []byte{0x1b, 0x5b, 0x33, 0x7e}
-	escSeqInsert = []byte{0x1b, 0x5b, 0x32, 0x7e}
-	escSeqHome   = []byte{0x1b, 0x5b, 0x37, 0x7e}
-	escSeqEnd    = []byte{0x1b, 0x5b, 0x38, 0x7e}
-	escSeqF1     = []byte{0x1b, 0x5b, 0x31, 0x31, 0x7e}
-	escSeqF2     = []byte{0x1b, 0x5b, 0x31, 0x32, 0x7e}
-	escSeqF3     = []byte{0x1b, 0x5b, 0x31, 0x33, 0x7e}
-	escSeqF4     = []byte{0x1b, 0x5b, 0x31, 0x34, 0x7e}
-	escSeqF5     = []byte{0x1b, 0x5b, 0x31, 0x35, 0x7e}
-	escSeqLeft   = []byte{0x1b, 0x5b, 0x44}
-	escSeqRight  = []byte{0x1b, 0x5b, 0x43}
-	escSeqUp     = []byte{0x1b, 0x5b, 0x41}
-	escSeqDown   = []byte{0x1b, 0x5b, 0x42}
-)
+// COMMANDS ////////////////////////////////////////////////////////////////////////////////////////////
 
 func (e *Edlin) edit(p0 int) {
 	e.Current = p0
@@ -278,15 +305,14 @@ func (e *Edlin) edit(p0 int) {
 	fmt.Printf("%7d:*%s\n", e.Current, e.Lines[e.Current-1])
 	fmt.Printf("%7d:*", e.Current)
 
-	defer setRaw()()
+	rr := e.newRawReader()
+	defer rr.Close()
 
 	model := e.Lines[e.Current-1]
 	mi := 0
 	ins := false
 
-	buf := make([]byte, 1)
 	outbuf := []byte{}
-	escbuf := make([]byte, 0, 10)
 	ok := true
 
 	emit := func(buf []byte) {
@@ -307,11 +333,10 @@ func (e *Edlin) edit(p0 int) {
 
 editLoop:
 	for {
-		_, err := os.Stdin.Read(buf)
-		fatal("reading term", err)
+		buf := rr.Next()
 
-		switch len(escbuf) {
-		case 0:
+		switch {
+		case len(buf) == 1:
 			switch buf[0] {
 			case 0x3: // Ctrl-C
 				ok = false
@@ -322,87 +347,66 @@ editLoop:
 				fmt.Printf("^Z")
 			case 0x7f: // Backspace
 				if len(outbuf) > 0 {
+					if outbuf[len(outbuf)-1] == 0x1a {
+						fmt.Fprintf(e.Stdout, "\x08 \x08")
+					}
+					fmt.Fprintf(e.Stdout, "\x08 \x08")
 					outbuf = outbuf[:len(outbuf)-1]
 				}
 			case 0xd: // Return
 				break editLoop
-			case 0x1b: // ESC
-				escbuf = append(escbuf, 0x1b)
 			default:
 				emit(buf)
 			}
 
-		case 1:
-			escbuf = append(escbuf, buf[0])
-			if buf[0] != '[' {
-				// not a CSI
-				emit(escbuf)
-				escbuf = escbuf[:0]
+		case bytes.Equal(buf, escSeqDelete):
+			//skip a single character from model
+			mi++
+		case bytes.Equal(buf, escSeqInsert):
+			// toggle insert mode (in insert mode typed character won't cause model characters to be skipped)
+			ins = !ins
+		case bytes.Equal(buf, escSeqF1) || bytes.Equal(buf, escSeqRight):
+			// copy a single character from model
+			emitModel()
+			mi++
+		case bytes.Equal(buf, escSeqF3) || bytes.Equal(buf, escSeqEnd):
+			// copy everything from model till the end of the line
+			for mi < len(model) {
+				emitModel()
+				mi++
+			}
+		case bytes.Equal(buf, escSeqF5) || bytes.Equal(buf, escSeqHome):
+			// copy current input to model, display a @ to signify that the model was copied
+			fmt.Printf("@")
+			outbuf = outbuf[:0]
+			model = string(outbuf)
+			mi = 0
+
+		case bytes.Equal(buf, escSeqF2):
+			// copy everythin from model till the first match of the argument character
+			_, err := os.Stdin.Read(buf)
+			fatal("reading term", err)
+			for mi < len(model) {
+				if model[mi] == buf[0] {
+					break
+				}
+				emitModel()
+				mi++
+			}
+
+		case bytes.Equal(buf, escSeqF4):
+			//skip everything on model till the first match of the argument character
+			_, err := os.Stdin.Read(buf)
+			fatal("reading term", err)
+			for mi < len(model) {
+				if model[mi] == buf[0] {
+					break
+				}
+				mi++
 			}
 
 		default:
-			escbuf = append(escbuf, buf[0])
-			switch {
-			default:
-				// malformed sequence, flushing
-				fmt.Printf("%s", string(escbuf))
-				escbuf = escbuf[:0]
-			case (buf[0] >= 0x20 && buf[0] <= 0x2f) || (buf[0] >= 0x30 && buf[0] <= 0x3f):
-				// parameter or intermediate bytes
-			case buf[0] >= 0x40 && buf[0] <= 0x7e:
-				// final character
-				switch {
-				case bytes.Equal(escbuf, escSeqDelete):
-					//skip a single character from model
-					mi++
-				case bytes.Equal(escbuf, escSeqInsert):
-					// toggle insert mode (in insert mode typed character won't cause model characters to be skipped)
-					ins = !ins
-				case bytes.Equal(escbuf, escSeqF1) || bytes.Equal(escbuf, escSeqRight):
-					// copy a single character from model
-					emitModel()
-					mi++
-				case bytes.Equal(escbuf, escSeqF3) || bytes.Equal(escbuf, escSeqEnd):
-					// copy everything from model till the end of the line
-					for mi < len(model) {
-						emitModel()
-						mi++
-					}
-				case bytes.Equal(escbuf, escSeqF5) || bytes.Equal(escbuf, escSeqHome):
-					// copy current input to model, display a @ to signify that the model was copied
-					fmt.Printf("@")
-					outbuf = outbuf[:0]
-					model = string(outbuf)
-					mi = 0
-
-				case bytes.Equal(escbuf, escSeqF2):
-					// copy everythin from model till the first match of the argument character
-					_, err := os.Stdin.Read(buf)
-					fatal("reading term", err)
-					for mi < len(model) {
-						if model[mi] == buf[0] {
-							break
-						}
-						emitModel()
-						mi++
-					}
-
-				case bytes.Equal(escbuf, escSeqF4):
-					//skip everything on model till the first match of the argument character
-					_, err := os.Stdin.Read(buf)
-					fatal("reading term", err)
-					for mi < len(model) {
-						if model[mi] == buf[0] {
-							break
-						}
-						mi++
-					}
-
-				default:
-					fmt.Printf("%x", escbuf)
-				}
-				escbuf = escbuf[:0]
-			}
+			// nothing
 		}
 	}
 
@@ -492,28 +496,67 @@ func (e *Edlin) quit() ExecReturn {
 
 }
 
-func (e *Edlin) yesno(prompt string, strict bool) byte {
-	for {
-		fmt.Fprintf(e.Stdout, prompt)
-
-		tocooked := setRaw()
-		buf := make([]byte, 1)
-		_, err := os.Stdin.Read(buf)
-		fmt.Fprintf(e.Stdout, "%c", buf[0])
-		tocooked()
-		fatal("reading term", err)
-
-		buf[0] = buf[0] & ^uint8(0x20)
-
-		if !strict {
-			return buf[0]
-		}
-		switch buf[0] {
-		case 'Y', 'N':
-			return buf[0]
+func (e *Edlin) replace(params []int, needleAndRepl string, qmark bool) {
+	p0, p1 := params2(params)
+	if p0 == 0 {
+		p0 = e.Current + 1
+	}
+	if p1 == 0 {
+		p1 = len(e.Lines) + 1
+	}
+	var needle, replace string
+	if needleAndRepl == "" {
+		needle = e.lastNeedle
+		replace = e.lastReplace
+	} else {
+		ctrlz := strings.Index(needleAndRepl, string(0x1a))
+		if ctrlz < 0 {
+			needle = needleAndRepl
+			replace = ""
+		} else {
+			needle = needleAndRepl[:ctrlz]
+			replace = needleAndRepl[ctrlz+1:]
 		}
 	}
+	e.lastNeedle = needle
+	e.lastReplace = replace
 
+	for i := p0; i <= len(e.Lines) && i <= p1; i++ {
+		s := e.Lines[i-1]
+		z := 0
+		for {
+			o := strings.Index(s[z:], needle)
+			if o < 0 {
+				break
+			}
+			z += o
+
+			iscur := ' '
+			if i == e.Current {
+				iscur = '*'
+			}
+
+			doit := true
+			if qmark {
+				fmt.Fprintf(e.Stdout, "%7d:%c%s\n", i, iscur, s)
+				doit = e.yesno("O.K.? ", false) == 'Y'
+			}
+			if !doit {
+				z += len(needle)
+				continue
+			}
+
+			s = s[:z] + replace + s[z+len(needle):]
+			z += len(replace)
+			e.Current = i
+			e.Dirty = true
+
+			if !qmark {
+				fmt.Fprintf(e.Stdout, "%7d:%c%s\n", i, iscur, s)
+			}
+		}
+		e.Lines[i-1] = s
+	}
 }
 
 func (e *Edlin) search(params []int, needle string, qmark bool) {
@@ -582,6 +625,32 @@ func (e *Edlin) write(params []int) {
 	e.Dirty = true
 }
 
+// SUPPORT ////////////////////////////////////////////////////////////////////////////////////////////
+
+func (e *Edlin) yesno(prompt string, strict bool) byte {
+	for {
+		fmt.Fprintf(e.Stdout, prompt)
+
+		tocooked := setRaw()
+		buf := make([]byte, 1)
+		_, err := os.Stdin.Read(buf)
+		fmt.Fprintf(e.Stdout, "%c", buf[0])
+		tocooked()
+		fatal("reading term", err)
+
+		buf[0] = buf[0] & ^uint8(0x20)
+
+		if !strict {
+			return buf[0]
+		}
+		switch buf[0] {
+		case 'Y', 'N':
+			return buf[0]
+		}
+	}
+
+}
+
 func params2(params []int) (int, int) {
 	var p0, p1 int
 	switch len(params) {
@@ -613,4 +682,76 @@ func setRaw() func() {
 		}
 	}
 	return func() {}
+}
+
+var (
+	escSeqDelete = []byte{0x1b, 0x5b, 0x33, 0x7e}
+	escSeqInsert = []byte{0x1b, 0x5b, 0x32, 0x7e}
+	escSeqHome   = []byte{0x1b, 0x5b, 0x37, 0x7e}
+	escSeqEnd    = []byte{0x1b, 0x5b, 0x38, 0x7e}
+	escSeqF1     = []byte{0x1b, 0x5b, 0x31, 0x31, 0x7e}
+	escSeqF2     = []byte{0x1b, 0x5b, 0x31, 0x32, 0x7e}
+	escSeqF3     = []byte{0x1b, 0x5b, 0x31, 0x33, 0x7e}
+	escSeqF4     = []byte{0x1b, 0x5b, 0x31, 0x34, 0x7e}
+	escSeqF5     = []byte{0x1b, 0x5b, 0x31, 0x35, 0x7e}
+	escSeqLeft   = []byte{0x1b, 0x5b, 0x44}
+	escSeqRight  = []byte{0x1b, 0x5b, 0x43}
+	escSeqUp     = []byte{0x1b, 0x5b, 0x41}
+	escSeqDown   = []byte{0x1b, 0x5b, 0x42}
+)
+
+type rawReader struct {
+	e        *Edlin
+	buf      []byte
+	escbuf   []byte
+	tocooked func()
+}
+
+func (e *Edlin) newRawReader() *rawReader {
+	tocooked := setRaw()
+	return &rawReader{e, make([]byte, 1), make([]byte, 0, 10), tocooked}
+}
+
+func (rr *rawReader) Next() []byte {
+	for {
+		_, err := os.Stdin.Read(rr.buf)
+		fatal("reading term", err)
+
+		switch len(rr.escbuf) {
+		case 0:
+			if rr.buf[0] == 0x1b { // ESC
+				rr.escbuf = append(rr.escbuf, 0x1b)
+			} else {
+				return rr.buf
+			}
+
+		case 1:
+			rr.escbuf = append(rr.escbuf, rr.buf[0])
+			if rr.buf[0] != '[' {
+				// not a CSI
+				b := rr.escbuf
+				rr.escbuf = rr.escbuf[:0]
+				return b
+			}
+
+		default:
+			rr.escbuf = append(rr.escbuf, rr.buf[0])
+			switch {
+			case (rr.buf[0] >= 0x20 && rr.buf[0] <= 0x2f) || (rr.buf[0] >= 0x30 && rr.buf[0] <= 0x3f):
+				// parameter or intermediate bytes
+			default:
+				// malformed sequence, flushing
+				fallthrough
+			case rr.buf[0] >= 0x40 && rr.buf[0] <= 0x7e:
+				// final character
+				b := rr.escbuf
+				rr.escbuf = rr.escbuf[:0]
+				return b
+			}
+		}
+	}
+}
+
+func (rr *rawReader) Close() {
+	rr.tocooked()
 }
