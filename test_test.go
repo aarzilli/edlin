@@ -30,7 +30,8 @@ gentil farfalletta”.
 Confusa, pentita,
 Teresa arrossì,
 dischiuse le dita
-e quella fuggì`
+e quella fuggì
+`
 
 func testCommandIntl(t *testing.T, before, after string, cur int, command string, output string) (*Edlin, string) {
 	var e Edlin
@@ -39,6 +40,9 @@ func testCommandIntl(t *testing.T, before, after string, cur int, command string
 	e.Current = cur
 	if before != "" {
 		e.Lines = strings.Split(before, "\n")
+		if len(e.Lines) > 0 && e.Lines[len(e.Lines)-1] == "" {
+			e.Lines = e.Lines[:len(e.Lines)-1]
+		}
 	}
 	e.Exec(command)
 	t.Logf("<%s> -> %s\n", command, out.String())
@@ -46,6 +50,9 @@ func testCommandIntl(t *testing.T, before, after string, cur int, command string
 		t.Errorf("error executing %q, output mismatch", command)
 	}
 	oafter := strings.Join(e.Lines, "\n")
+	if len(oafter) > 0 && oafter[len(oafter)-1] != '\n' {
+		oafter += "\n"
+	}
 	if after != oafter {
 		t.Errorf("buffer mismatch after executing %q: %q", command, oafter)
 	}

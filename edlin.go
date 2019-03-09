@@ -143,7 +143,7 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 		e.end(params)
 		return Quit
 	case 'I':
-		//TODO: insert
+		e.insert(params)
 	case 'L':
 		e.display(params, false)
 	case 'M':
@@ -242,7 +242,7 @@ func (e *Edlin) parse(cmdstr string) (params []int, cmd byte, rest string) {
 			params = append(params, e.Current)
 		case '#':
 			i++
-			params = append(params, len(e.Lines))
+			params = append(params, len(e.Lines)+1)
 		case '+':
 			i++
 			n := e.Current + readnum()
@@ -328,7 +328,7 @@ func (e *Edlin) copy(params []int, move bool) {
 	if p1 == 0 {
 		p1 = e.Current
 	}
-	if p0 > p1 || p0 < 0 || p0 > len(e.Lines) || p1 > len(e.Lines) || p2 <= 0 || p2 > len(e.Lines) || (p2 >= p0 && p2 <= p1) {
+	if p0 > p1 || p0 < 0 || p0 > len(e.Lines) || p1 > len(e.Lines) || p2 <= 0 || p2 > len(e.Lines)+1 || (p2 >= p0 && p2 <= p1) {
 		panic(EntryErrMsg)
 	}
 
@@ -506,6 +506,68 @@ func (e *Edlin) delete(params []int) {
 	e.Current = p0
 }
 
+func (e *Edlin) insert(params []int) {
+	p0 := params1(params)
+	if p0 > len(e.Lines)+1 {
+		panic(EntryErrMsg)
+	}
+	temp := []string{}
+
+	for {
+		ln, cont := e.insertOne(p0 + len(temp))
+		if !cont {
+			break
+		}
+		temp = append(temp, ln)
+	}
+
+	e.copyIntl(temp, 1, p0)
+	e.Current += len(temp)
+}
+
+func (e *Edlin) insertOne(idx int) (string, bool) {
+	fmt.Fprintf(e.Stdout, "%7d:*", idx)
+
+	rr := e.newRawReader()
+	defer rr.Close()
+
+	var outbuf []byte
+
+	for {
+		buf := rr.Next()
+
+		switch len(buf) {
+		case 1:
+			switch buf[0] {
+			case 0x3: // Ctrl-C
+				fmt.Fprintf(e.Stdout, "^C")
+				return "", false
+
+			case 0x1a: // Ctrl-Z
+				fmt.Fprintf(e.Stdout, "^Z")
+				outbuf = append(outbuf, 0x1a)
+			case 0x7f: // Backspace
+				if len(outbuf) > 0 {
+					if outbuf[len(outbuf)-1] == 0x1a {
+						fmt.Fprintf(e.Stdout, "\x08 \x08")
+					}
+					fmt.Fprintf(e.Stdout, "\x08 \x08")
+					outbuf = outbuf[:len(outbuf)-1]
+				}
+			case 0xd: // Return
+				return string(outbuf), true
+			default:
+				fmt.Fprintf(e.Stdout, "%s", string(buf))
+				outbuf = append(outbuf, buf...)
+			}
+
+		default:
+			fmt.Fprintf(e.Stdout, "%s", string(buf))
+			outbuf = append(outbuf, buf...)
+		}
+	}
+}
+
 func (e *Edlin) end(params []int) {
 	if len(params) != 0 {
 		panic(EntryErrMsg)
@@ -666,18 +728,10 @@ func (e *Edlin) search(params []int, needle string, qmark bool) {
 }
 
 func (e *Edlin) transfer(params []int, rest string) {
-	p0 := e.Current
-	switch len(params) {
-	case 0:
-		// ok
-	case 1:
-		if params[0] != 0 {
-			p0 = params[0]
-		}
-	default:
-		panic(EntryErrMsg)
+	p0 := params1(params)
+	if p0 == 0 {
+		p0 = e.Current
 	}
-
 	fh, err := os.Open(rest)
 	if err != nil {
 		fmt.Fprintf(e.Stdout, "error reading %s: %v", rest, err)
@@ -742,6 +796,17 @@ func (e *Edlin) yesno(prompt string, strict bool) byte {
 		}
 	}
 
+}
+
+func params1(params []int) int {
+	switch len(params) {
+	case 0:
+		return 0
+	case 1:
+		return params[0]
+	default:
+		panic(EntryErrMsg)
+	}
 }
 
 func params2(params []int) (int, int) {
