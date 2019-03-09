@@ -29,12 +29,7 @@ func main() {
 	TheEditor.Path = os.Args[1]
 
 	if fh, err := os.Open(TheEditor.Path); err == nil {
-		rd := bufio.NewScanner(fh)
-		for rd.Scan() {
-			TheEditor.Lines = append(TheEditor.Lines, rd.Text())
-		}
-		fatal("read", rd.Err())
-		fmt.Printf(EndOfInputFileMsg)
+		TheEditor.Lines = readFileLines(fh, true)
 	} else {
 		if !os.IsNotExist(err) {
 			fatal("open", err)
@@ -164,7 +159,7 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 	case 'S':
 		e.search(params, rest, qmark)
 	case 'T':
-		//TODO: transfer
+		e.transfer(params, rest)
 	case 'W':
 		e.write(params)
 	default:
@@ -293,6 +288,20 @@ func (e *Edlin) parse(cmdstr string) (params []int, cmd byte, rest string) {
 	return nil, 0, ""
 }
 
+func readFileLines(fh io.ReadCloser, eofmsg bool) []string {
+	r := []string{}
+	rd := bufio.NewScanner(fh)
+	for rd.Scan() {
+		r = append(r, rd.Text())
+	}
+	fatal("read", rd.Err())
+	if eofmsg {
+		fmt.Printf(EndOfInputFileMsg)
+	}
+	fh.Close()
+	return r
+}
+
 // COMMANDS ////////////////////////////////////////////////////////////////////////////////////////////
 
 func (e *Edlin) copy(params []int, move bool) {
@@ -333,6 +342,11 @@ func (e *Edlin) copy(params []int, move bool) {
 		}
 	}
 
+	e.copyIntl(temp, times, p2)
+
+}
+
+func (e *Edlin) copyIntl(temp []string, times int, p2 int) {
 	extra := len(temp) * times
 
 	for len(e.Lines)+extra > cap(e.Lines) {
@@ -649,6 +663,28 @@ func (e *Edlin) search(params []int, needle string, qmark bool) {
 	}
 
 	fmt.Fprintf(os.Stderr, NotFoundMsg)
+}
+
+func (e *Edlin) transfer(params []int, rest string) {
+	p0 := e.Current
+	switch len(params) {
+	case 0:
+		// ok
+	case 1:
+		if params[0] != 0 {
+			p0 = params[0]
+		}
+	default:
+		panic(EntryErrMsg)
+	}
+
+	fh, err := os.Open(rest)
+	if err != nil {
+		fmt.Fprintf(e.Stdout, "error reading %s: %v", rest, err)
+		return
+	}
+	temp := readFileLines(fh, false)
+	e.copyIntl(temp, 1, p0)
 }
 
 func (e *Edlin) write(params []int) {
