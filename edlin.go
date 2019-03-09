@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"github.com/pkg/term/termios"
 	"io"
 	"os"
 	"strings"
 	"syscall"
+	"text/tabwriter"
+
+	"github.com/pkg/term/termios"
 )
 
 var TheEditor Edlin
@@ -100,71 +102,117 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 	if e.Stdout == nil {
 		e.Stdout = os.Stdout
 	}
-	params, cmd, rest := e.parse(cmdstr)
 
-	//TODO: sequence of commands separated by semicolon
+	for cmdstr != "" {
+		params, cmd, rest := e.parse(cmdstr)
+		cmdstr = ""
 
-	qmark := false
-	if cmd == '?' && len(rest) > 0 {
-		cmd = rest[0]
-		rest = rest[1:]
-		qmark = true
-	}
-
-	cmd = cmd & ^uint8(0x20)
-
-	if qmark && cmd != 'S' && cmd != 'R' {
-		fmt.Fprintf(e.Stdout, EntryErrMsg)
-		return Continue
-	}
-
-	switch cmd {
-	case 0:
-		if len(params) == 0 || (len(params) == 1 && params[0]-1 >= len(e.Lines)) {
-			return Continue
+		colonsep := func() {
+			if len(rest) <= 0 {
+				return
+			}
+			if rest[0] == ';' || rest[0] == 0x1a {
+				cmdstr = rest[1:]
+				return
+			}
+			panic(EntryErrMsg)
 		}
-		if len(params) != 1 {
+
+		qmark := false
+		if cmd == '?' && len(rest) > 0 {
+			cmd = rest[0]
+			rest = rest[1:]
+			qmark = true
+		}
+
+		if cmd > 0x60 {
+			cmd = cmd & ^uint8(0x20)
+		}
+
+		if qmark && cmd != 'S' && cmd != 'R' {
 			fmt.Fprintf(e.Stdout, EntryErrMsg)
 			return Continue
 		}
-		e.edit(params[0])
-	case '?':
-		//TODO: print help (document function keys for edit?)
-	case 'A':
-		if len(params) != 1 {
-			panic(EntryErrMsg)
-		}
-		fmt.Fprintf(e.Stdout, EndOfInputFileMsg)
-	case 'C':
-		e.copy(params, false)
-	case 'D':
-		e.delete(params)
-	case 'E':
-		e.end(params)
-		return Quit
-	case 'I':
-		e.insert(params)
-	case 'L':
-		e.display(params, false)
-	case 'M':
-		e.copy(params, true)
-	case 'P':
-		e.display(params, true)
-	case 'Q':
-		if e.quit() == Quit {
+
+		switch cmd {
+		case 0:
+			if len(params) == 0 || (len(params) == 1 && params[0]-1 >= len(e.Lines)) {
+				return Continue
+			}
+			if len(params) != 1 {
+				fmt.Fprintf(e.Stdout, EntryErrMsg)
+				return Continue
+			}
+			colonsep()
+			e.edit(params[0])
+		case '?':
+			if len(params) != 0 {
+				fmt.Fprintf(e.Stdout, EntryErrMsg)
+				return Continue
+			}
+			colonsep()
+			tw := tabwriter.NewWriter(e.Stdout, 8, 8, 4, ' ', 0)
+			fmt.Fprintf(tw, "Edit line	line#\n")
+			fmt.Fprintf(tw, "Append	[#lines]A\n")
+			fmt.Fprintf(tw, "Copy	[startline],[endline],toline[,times]C\n")
+			fmt.Fprintf(tw, "Delete	[startline][,endline]D\n")
+			fmt.Fprintf(tw, "End (save file)	E\n")
+			fmt.Fprintf(tw, "Insert	[line]I\n")
+			fmt.Fprintf(tw, "List	[startline][,endline]L\n")
+			fmt.Fprintf(tw, "Move	[startline],[endline],tolineM\n")
+			fmt.Fprintf(tw, "Page	[startline][,endline]P\n")
+			fmt.Fprintf(tw, "Quit (throw away changes)	Q\n")
+			fmt.Fprintf(tw, "Replace	[startline][,endline][?]R[oldtext][CTRL+Znewtext]\n")
+			fmt.Fprintf(tw, "Search	[startline][,endline][?]Stext\n")
+			fmt.Fprintf(tw, "Transfer	[toline]T[path]\n")
+			fmt.Fprintf(tw, "Write	[#lines]W\n")
+			tw.Flush()
+		case 'A':
+			if len(params) != 1 {
+				panic(EntryErrMsg)
+			}
+			colonsep()
+			fmt.Fprintf(e.Stdout, EndOfInputFileMsg)
+		case 'C':
+			colonsep()
+			e.copy(params, false)
+		case 'D':
+			colonsep()
+			e.delete(params)
+		case 'E':
+			colonsep()
+			e.end(params)
 			return Quit
+		case 'I':
+			colonsep()
+			e.insert(params)
+		case 'L':
+			colonsep()
+			e.display(params, false)
+		case 'M':
+			colonsep()
+			e.copy(params, true)
+		case 'P':
+			colonsep()
+			e.display(params, true)
+		case 'Q':
+			if e.quit() == Quit {
+				return Quit
+			}
+		case 'R':
+			cmdstr = e.replace(params, rest, qmark)
+		case 'S':
+			cmdstr = e.search(params, rest, qmark)
+		case 'T':
+			colonsep()
+			e.transfer(params, rest)
+		case 'W':
+			colonsep()
+			e.write(params)
+		default:
+			fmt.Fprintf(e.Stdout, EntryErrMsg)
+			return Continue
 		}
-	case 'R':
-		e.replace(params, rest, qmark)
-	case 'S':
-		e.search(params, rest, qmark)
-	case 'T':
-		e.transfer(params, rest)
-	case 'W':
-		e.write(params)
-	default:
-		fmt.Fprintf(e.Stdout, EntryErrMsg)
-		return Continue
 	}
 
 	return Continue
@@ -184,8 +232,7 @@ func (e *Edlin) Input() string {
 
 	for {
 		buf := rr.Next()
-		switch len(buf) {
-		case 1:
+		if len(buf) == 1 {
 			switch buf[0] {
 			case 0x3: // Ctrl-C
 				fmt.Fprintf(e.Stdout, "^C")
@@ -208,9 +255,6 @@ func (e *Edlin) Input() string {
 				fmt.Fprintf(e.Stdout, "%s", string(buf))
 				outbuf = append(outbuf, buf...)
 			}
-		default:
-			fmt.Fprintf(e.Stdout, "%s", string(buf))
-			outbuf = append(outbuf, buf...)
 		}
 	}
 }
@@ -536,8 +580,7 @@ func (e *Edlin) insertOne(idx int) (string, bool) {
 	for {
 		buf := rr.Next()
 
-		switch len(buf) {
-		case 1:
+		if len(buf) == 1 {
 			switch buf[0] {
 			case 0x3: // Ctrl-C
 				fmt.Fprintf(e.Stdout, "^C")
@@ -560,10 +603,6 @@ func (e *Edlin) insertOne(idx int) (string, bool) {
 				fmt.Fprintf(e.Stdout, "%s", string(buf))
 				outbuf = append(outbuf, buf...)
 			}
-
-		default:
-			fmt.Fprintf(e.Stdout, "%s", string(buf))
-			outbuf = append(outbuf, buf...)
 		}
 	}
 }
@@ -629,7 +668,7 @@ func (e *Edlin) quit() ExecReturn {
 
 }
 
-func (e *Edlin) replace(params []int, needleAndRepl string, qmark bool) {
+func (e *Edlin) replace(params []int, needleAndRepl string, qmark bool) (rest string) {
 	p0, p1 := params2(params)
 	if p0 == 0 {
 		p0 = e.Current + 1
@@ -649,6 +688,10 @@ func (e *Edlin) replace(params []int, needleAndRepl string, qmark bool) {
 		} else {
 			needle = needleAndRepl[:ctrlz]
 			replace = needleAndRepl[ctrlz+1:]
+			if ctrlz := strings.Index(replace, string(0x1a)); ctrlz >= 0 {
+				rest = replace[ctrlz+1:]
+				replace = replace[:ctrlz]
+			}
 		}
 	}
 	e.lastNeedle = needle
@@ -690,15 +733,21 @@ func (e *Edlin) replace(params []int, needleAndRepl string, qmark bool) {
 		}
 		e.Lines[i-1] = s
 	}
+
+	return rest
 }
 
-func (e *Edlin) search(params []int, needle string, qmark bool) {
+func (e *Edlin) search(params []int, needle string, qmark bool) (rest string) {
 	p0, p1 := params2(params)
 	if p0 == 0 {
 		p0 = e.Current + 1
 	}
 	if p1 == 0 {
 		p1 = len(e.Lines) + 1
+	}
+	if ctrlz := strings.Index(needle, string(0x1a)); ctrlz >= 0 {
+		rest = needle[ctrlz+1:]
+		needle = needle[:ctrlz]
 	}
 	if needle == "" {
 		needle = e.lastNeedle
@@ -725,6 +774,7 @@ func (e *Edlin) search(params []int, needle string, qmark bool) {
 	}
 
 	fmt.Fprintf(os.Stderr, NotFoundMsg)
+	return rest
 }
 
 func (e *Edlin) transfer(params []int, rest string) {
