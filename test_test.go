@@ -52,10 +52,11 @@ func testCommandIntl(t *testing.T, before, after string, cur int, command string
 	return &e, out.String()
 }
 
-func testCommand(t *testing.T, before, after string, cur int, command string, output string) {
+func testCommand(t *testing.T, before, after string, cur int, command string, output string) (e *Edlin, o string) {
 	t.Run(command, func(t *testing.T) {
-		testCommandIntl(t, before, after, cur, command, output)
+		e, o = testCommandIntl(t, before, after, cur, command, output)
 	})
+	return e, o
 }
 
 func testList(t *testing.T, before, command string, start, end, cur int) {
@@ -105,4 +106,38 @@ func TestList(t *testing.T) {
 
 func TestSearch(t *testing.T) {
 	testCommandIntl(t, vispaTeresa, vispaTeresa, 1, "ser", "*")
+}
+
+func assertCurrent(t *testing.T, e *Edlin, n int) {
+	if e.Current != n {
+		t.Fatalf("expected current %d got %d\n", n, e.Current)
+	}
+}
+
+func TestCopy(t *testing.T) {
+	e, _ := testCommand(t,
+		"uno\ndue\ntre\nquattro\ncinque\nsei\n",
+		"cinque\nuno\ndue\ntre\nquattro\ncinque\nsei\n", 1, "5,5,1c", "*")
+	assertCurrent(t, e, 1)
+	e, _ = testCommand(t,
+		"uno\ndue\ntre\nquattro\ncinque\nsei\n",
+		"uno\ndue\ntre\nquattro\nuno\ndue\ntre\ncinque\nsei\n", 1, "1,3,5c", "*")
+	assertCurrent(t, e, 5)
+	e, _ = testCommand(t,
+		"uno\ndue\ntre\nquattro\ncinque\nsei\n",
+		"cinque\nuno\ndue\ntre\nquattro\nsei\n", 1, "5,5,1m", "*")
+	assertCurrent(t, e, 1)
+	e, _ = testCommand(t,
+		"uno\ndue\ntre\nquattro\ncinque\nsei\n",
+		"quattro\nuno\ndue\ntre\ncinque\nsei\n", 1, "1,3,5m", "*")
+	assertCurrent(t, e, 2)
+	testCommand(t,
+		"uno\ndue\ntre\nquattro\ncinque\nsei\n",
+		"uno\ncinque\ncinque\ncinque\ndue\ntre\nquattro\ncinque\nsei\n", 1, "5,5,2,3c", "*")
+	testCommand(t,
+		"uno\ndue\ntre\nquattro\ncinque\nsei\n",
+		"uno\ndue\ntre\nquattro\ncinque\nsei\nuno\ndue\n", 1, "1,2,#c", "*")
+	testCommand(t,
+		"uno\ndue\ntre\nquattro\ncinque\nsei\n",
+		"tre\nquattro\ncinque\nsei\nuno\ndue\n", 1, "1,2,#m", "*")
 }

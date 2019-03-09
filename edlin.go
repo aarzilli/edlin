@@ -105,7 +105,7 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 	if e.Stdout == nil {
 		e.Stdout = os.Stdout
 	}
-	params, cmd, rest := TheEditor.parse(cmdstr)
+	params, cmd, rest := e.parse(cmdstr)
 
 	//TODO: sequence of commands separated by semicolon
 
@@ -141,7 +141,7 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 		}
 		fmt.Fprintf(e.Stdout, EndOfInputFileMsg)
 	case 'C':
-		//TODO: copy
+		e.copy(params, false)
 	case 'D':
 		e.delete(params)
 	case 'E':
@@ -152,7 +152,7 @@ func (e *Edlin) Exec(cmdstr string) ExecReturn {
 	case 'L':
 		e.display(params, false)
 	case 'M':
-		//TODO: move
+		e.copy(params, true)
 	case 'P':
 		e.display(params, true)
 	case 'Q':
@@ -247,7 +247,7 @@ func (e *Edlin) parse(cmdstr string) (params []int, cmd byte, rest string) {
 			params = append(params, e.Current)
 		case '#':
 			i++
-			params = append(params, len(e.Lines)+1)
+			params = append(params, len(e.Lines))
 		case '+':
 			i++
 			n := e.Current + readnum()
@@ -294,6 +294,63 @@ func (e *Edlin) parse(cmdstr string) (params []int, cmd byte, rest string) {
 }
 
 // COMMANDS ////////////////////////////////////////////////////////////////////////////////////////////
+
+func (e *Edlin) copy(params []int, move bool) {
+	if len(params) < 3 {
+		panic(EntryErrMsg)
+	}
+	if move && len(params) != 3 {
+		panic(EntryErrMsg)
+	}
+	times := 1
+	if len(params) > 3 {
+		times = params[3]
+		if times <= 0 {
+			panic(EntryErrMsg)
+		}
+	}
+
+	p0 := params[0]
+	p1 := params[1]
+	p2 := params[2]
+	if p0 == 0 {
+		p0 = e.Current
+	}
+	if p1 == 0 {
+		p1 = e.Current
+	}
+	if p0 > p1 || p0 < 0 || p0 > len(e.Lines) || p1 > len(e.Lines) || p2 <= 0 || p2 > len(e.Lines) || (p2 >= p0 && p2 <= p1) {
+		panic(EntryErrMsg)
+	}
+
+	temp := make([]string, p1-p0+1)
+	copy(temp, e.Lines[p0-1:p1])
+
+	if move {
+		e.Lines = append(e.Lines[:p0-1], e.Lines[p1:]...)
+		if p2 >= p1 {
+			p2 -= (p1 - p0) + 1
+		}
+	}
+
+	extra := len(temp) * times
+
+	for len(e.Lines)+extra > cap(e.Lines) {
+		n := make([]string, len(e.Lines), len(e.Lines)+extra)
+		copy(n, e.Lines)
+		e.Lines = n
+	}
+
+	e.Current = p2
+
+	e.Lines = e.Lines[0 : len(e.Lines)+extra]
+	copy(e.Lines[p2+extra-1:], e.Lines[p2-1:])
+	for t := 0; t < times; t++ {
+		copy(e.Lines[p2-1:], temp)
+		p2 += len(temp)
+	}
+	e.Dirty = true
+}
 
 func (e *Edlin) edit(p0 int) {
 	e.Current = p0
